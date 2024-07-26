@@ -1,0 +1,175 @@
+pipeline {
+    agent any
+    tools {
+        jdk 'jdk17'
+        nodejs 'node16'
+    }
+    environment{
+        SCANNER_HOME = tool 'sonar-scanner'
+        AWS_REGION = 'us-east-1'
+        ECR_REPO_NAME = 'abc'
+        ECR_REPO_URI = 'nnnn'
+        CLUSTER_NAME = 'lllll'
+        SERVICE_NAME = 'nnnnn'
+        TASK_DEFINITION_NAME = 'kkkkk'
+        CONTAINER_NAME = 'jjjjj'
+    }
+    stages{
+        stage ('Clean Workspace'){
+            steps {
+                cleanWs()
+            }
+        }
+        stage ('Checkout from Git'){
+            steps {
+                git branch: 'dev' , url: https://abc.com
+            }
+        }
+        stage ("Sonar Analysis"){
+            steps{
+                withSonarQubeEnv('sonar-server') {
+                    sh ''' $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectName=Game \
+                    -Dsonar.projectKey=Game '''
+                }
+            }
+        }
+        stage ("Quality Gate") {
+            steps{
+                script{
+                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token'
+                }
+            }
+        }
+        stage ("Docker build") {
+            steps{
+                sh "docker build -t ${ECR_REPO_NAME} ."
+            }
+        }
+        stage ("Trivy scan image"){
+            steps{
+                sh "trivy scan ${ECR_ REPO_NAME}:latest > trivy.txt "
+            }
+        }
+        stage ("Docker push to ECR"){
+            steps{
+                sh "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO_URI"
+                sh "docker tag ${ECR_REPO_NAME}:latest ${ECR_REPO_URI}:${ECR_REPO_NAME}:latest"
+                sh "docker push ${ECR_REPO_URI}:${ECR_REPO_NAME}:latest"
+            }
+        }
+        stage('Register Task Definition Revision') {
+            steps {
+                script {
+                    def taskDefinitionJson = """
+                    {
+                        "family": "${TASK_DEFINITION_NAME}",
+                        "executionRoleArn": "arn:aws:iam::909325007152:role/ecsTaskExecutionRole",
+                        "networkMode": "awsvpc",
+                        "containerDefinitions": [
+                            {
+                                "name": "${CONTAINER_NAME}",
+                                "image": "${ECR_REPO_URI}:latest",
+                                "cpu": 0,
+                                "portMappings": [
+                                    {
+                                        "containerPort": 3000,
+                                        "hostPort": 3000,
+                                        "protocol": "tcp",
+                                        "name": "node",
+                                        "appProtocol": "http"
+                                    }
+                                ],
+                                "essential": true,
+                                "environment": [],
+                                "environmentFiles": [],
+                                "mountPoints": [],
+                                "volumesFrom": [],
+                                "ulimits": [],
+                                "logConfiguration": {
+                                    "logDriver": "awslogs",
+                                    "options": {
+                                        "awslogs-group": "/ecs/${TASK_DEFINITION_NAME}",
+                                        "awslogs-create-group": "true",
+                                        "awslogs-region": "${AWS_REGION}",
+                                        "awslogs-stream-prefix": "ecs"
+                                    },
+                                    "secretOptions": []
+                                },
+                                "systemControls": []
+                            }
+                        ],
+                        "requiresCompatibilities": [
+                            "FARGATE"
+                        ],
+                        "cpu": "2048",
+                        "memory": "5120"
+                    }
+                    """
+                    
+                    // Register a new task definition revision
+                    def registerTaskDefCmd = "aws ecs register-task-definition --cli-input-json '${taskDefinitionJson}' --region ${AWS_REGION}"
+                    sh script: registerTaskDefCmd
+                }
+            }
+            stage('Update ECS Service') {
+                steps {
+                script {
+                    // Get the new task definition ARN
+                    def newTaskDefinitionArn = sh(script: "aws ecs describe-task-definition --task-definition ${TASK_DEFINITION_NAME} --region ${AWS_REGION} | jq -r '.taskDefinition.taskDefinitionArn'", returnStdout: true).trim()
+
+                    // Update the ECS service to use the new task definition revision
+                    sh """
+                    aws ecs update-service --cluster ${CLUSTER_NAME} --service ${SERVICE_NAME} --task-definition ${newTaskDefinitionArn} --region ${AWS_REGION}
+                    """
+                }
+                }
+            }
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
